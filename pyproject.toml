@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "q2-mock-communities"
+version = "0.1.0"
+description = "QIIME 2 plugin for generating mock microbial communities"
+requires-python = ">=3.8"
+dependencies = [
+    "qiime2",
+    "q2-types",
+    "numpy",
+    "pandas",
+    "biom-format",
+    "matplotlib",
+    "q2templates",
+]
+
+[project.entry-points."qiime2.plugins"]
+"q2-mock-communities" = "q2_mock_communities.plugin_setup:plugin"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+q2_mock_communities = ["templates/**/*"]

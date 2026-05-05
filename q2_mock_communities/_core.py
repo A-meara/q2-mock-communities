@@ -18,7 +18,11 @@ def make_communities(
     overlap: float = 0.0,
     core_overlap: float | int = 0.0,
     overlap_mode: str = 'chain',
+    groups: list[list[int]] | None = None,
+    group_core_overlap: float | int = 0.0,
     alpha: float = 0.5,
+    core_signature_strength: float = 1.0,
+    core_weight: float | None = None,
     n_samples: int | list[int] = 1,
     library_size: int = 10_000,
     shuffle_taxa: bool = False,
@@ -58,82 +62,199 @@ def make_communities(
     else:
         n_core = round(core_overlap * min(taxa_per))
 
-    if overlap_mode == 'chain':
-        overlap_counts = [
-            round(overlap * min(taxa_per[i], taxa_per[i + 1]))
-            for i in range(n_communities - 1)
-        ]
-        for i, ov in enumerate(overlap_counts):
-            if taxa_per[i] - ov < 1:
-                raise ValueError(
-                    f"overlap={overlap} between communities {i} and {i+1} leaves stride<1"
-                )
-        starts = [0]
-        for i in range(n_communities - 1):
-            starts.append(starts[-1] + taxa_per[i] - overlap_counts[i])
-        total_taxa = starts[-1] + taxa_per[-1]
-        all_taxa = [f"taxon_{i + 1:03d}" for i in range(total_taxa)]
-        taxon_membership: list[list[int]] = [[] for _ in range(total_taxa)]
-        community_indices = []
-        for c in range(n_communities):
-            idx = list(range(starts[c], starts[c] + taxa_per[c]))
-            community_indices.append(np.array(idx))
-            for t in idx:
-                taxon_membership[t].append(c)
-        boundary_lines = starts[1:]
-
-    else:  # 'core' or 'both'
-        for c, tp in enumerate(taxa_per):
-            if n_core > tp:
-                raise ValueError(
-                    f"core_overlap={core_overlap} gives n_core={n_core} which exceeds "
-                    f"community {c} (taxa_per={tp})"
-                )
-        unique_per = [tp - n_core for tp in taxa_per]
-
-        if overlap_mode == 'core':
-            overlap_counts = []
-            unique_starts = [n_core]
-            for c in range(n_communities - 1):
-                unique_starts.append(unique_starts[-1] + unique_per[c])
-        else:  # 'both'
+    if groups is None:
+        if overlap_mode == 'chain':
             overlap_counts = [
-                round(overlap * min(unique_per[i], unique_per[i + 1]))
+                round(overlap * min(taxa_per[i], taxa_per[i + 1]))
                 for i in range(n_communities - 1)
             ]
             for i, ov in enumerate(overlap_counts):
-                if unique_per[i] - ov < 1:
+                if taxa_per[i] - ov < 1:
                     raise ValueError(
-                        f"overlap={overlap} on unique portion of communities {i} and {i+1} "
-                        f"leaves stride<1; reduce overlap or increase taxa_per_community"
+                        f"overlap={overlap} between communities {i} and {i+1} leaves stride<1"
                     )
-            unique_starts = [n_core]
+            starts = [0]
             for i in range(n_communities - 1):
-                unique_starts.append(unique_starts[-1] + unique_per[i] - overlap_counts[i])
+                starts.append(starts[-1] + taxa_per[i] - overlap_counts[i])
+            total_taxa = starts[-1] + taxa_per[-1]
+            all_taxa = [f"taxon_{i + 1:03d}" for i in range(total_taxa)]
+            taxon_membership: list[list[int]] = [[] for _ in range(total_taxa)]
+            community_indices = []
+            for c in range(n_communities):
+                idx = list(range(starts[c], starts[c] + taxa_per[c]))
+                community_indices.append(np.array(idx))
+                for t in idx:
+                    taxon_membership[t].append(c)
+            boundary_lines = starts[1:]
 
-        total_taxa = unique_starts[-1] + unique_per[-1]
+        else:  # 'core' or 'both'
+            for c, tp in enumerate(taxa_per):
+                if n_core > tp:
+                    raise ValueError(
+                        f"core_overlap={core_overlap} gives n_core={n_core} which exceeds "
+                        f"community {c} (taxa_per={tp})"
+                    )
+            unique_per = [tp - n_core for tp in taxa_per]
+
+            if overlap_mode == 'core':
+                overlap_counts = []
+                unique_starts = [n_core]
+                for c in range(n_communities - 1):
+                    unique_starts.append(unique_starts[-1] + unique_per[c])
+            else:  # 'both'
+                overlap_counts = [
+                    round(overlap * min(unique_per[i], unique_per[i + 1]))
+                    for i in range(n_communities - 1)
+                ]
+                for i, ov in enumerate(overlap_counts):
+                    if unique_per[i] - ov < 1:
+                        raise ValueError(
+                            f"overlap={overlap} on unique portion of communities {i} and {i+1} "
+                            f"leaves stride<1; reduce overlap or increase taxa_per_community"
+                        )
+                unique_starts = [n_core]
+                for i in range(n_communities - 1):
+                    unique_starts.append(unique_starts[-1] + unique_per[i] - overlap_counts[i])
+
+            total_taxa = unique_starts[-1] + unique_per[-1]
+            all_taxa = [f"taxon_{i + 1:03d}" for i in range(total_taxa)]
+            taxon_membership = [[] for _ in range(total_taxa)]
+
+            core_idx = list(range(n_core))
+            for t in core_idx:
+                taxon_membership[t] = list(range(n_communities))
+
+            community_indices = []
+            for c in range(n_communities):
+                unique_idx = list(range(unique_starts[c], unique_starts[c] + unique_per[c]))
+                community_indices.append(np.array(core_idx + unique_idx))
+                for t in unique_idx:
+                    if c not in taxon_membership[t]:
+                        taxon_membership[t].append(c)
+
+            boundary_lines = unique_starts
+
+        n_group_core_list: list[int] = []
+
+    else:
+        # ---- groups layout ----
+        all_in_groups = sorted(c for g in groups for c in g)
+        if all_in_groups != list(range(n_communities)):
+            raise ValueError(
+                "groups must partition all community indices 0..n_communities-1 exactly once"
+            )
+
+        community_to_group = {c: g_idx for g_idx, g in enumerate(groups) for c in g}
+
+        n_group_core_list = []
+        for g in groups:
+            if len(g) <= 1:
+                n_group_core_list.append(0)
+            elif isinstance(group_core_overlap, int):
+                n_group_core_list.append(group_core_overlap)
+            else:
+                n_group_core_list.append(
+                    round(group_core_overlap * min(taxa_per[c] for c in g))
+                )
+
+        for c in range(n_communities):
+            g_idx = community_to_group[c]
+            n_unique_c = taxa_per[c] - n_core - n_group_core_list[g_idx]
+            if n_unique_c < 1:
+                raise ValueError(
+                    f"community {c}: taxa_per={taxa_per[c]} - n_core={n_core} "
+                    f"- n_group_core={n_group_core_list[g_idx]} = {n_unique_c} < 1"
+                )
+
+        taxa_offset = n_core
+        boundary_lines_list: list[int] = []
+        if n_core > 0:
+            boundary_lines_list.append(n_core)
+
+        group_core_idx_map: dict[int, list[int]] = {}
+        community_unique_idx_map: dict[int, list[int]] = {}
+        overlap_counts: list[int] = []
+
+        for g_idx, g in enumerate(groups):
+            gc = n_group_core_list[g_idx]
+            group_core_idx_map[g_idx] = list(range(taxa_offset, taxa_offset + gc))
+            taxa_offset += gc
+            if gc > 0:
+                boundary_lines_list.append(taxa_offset)
+
+            unique_sizes = [taxa_per[c] - n_core - gc for c in g]
+
+            if overlap_mode in ('chain', 'both') and len(g) > 1:
+                ov_g = [
+                    round(overlap * min(unique_sizes[i], unique_sizes[i + 1]))
+                    for i in range(len(g) - 1)
+                ]
+                for i, ov in enumerate(ov_g):
+                    if unique_sizes[i] - ov < 1:
+                        raise ValueError(
+                            f"overlap={overlap} between communities {g[i]} and {g[i+1]} "
+                            f"in group {g_idx} leaves stride<1"
+                        )
+                overlap_counts.extend(ov_g)
+                u_starts = [taxa_offset]
+                for i in range(len(g) - 1):
+                    u_starts.append(u_starts[-1] + unique_sizes[i] - ov_g[i])
+                taxa_offset = u_starts[-1] + unique_sizes[-1]
+                boundary_lines_list.extend(u_starts[1:])
+            else:
+                u_starts = [taxa_offset + sum(unique_sizes[:i]) for i in range(len(g))]
+                taxa_offset += sum(unique_sizes)
+                if len(g) > 1:
+                    boundary_lines_list.extend(u_starts[1:])
+
+            for i, c in enumerate(g):
+                community_unique_idx_map[c] = list(
+                    range(u_starts[i], u_starts[i] + unique_sizes[i])
+                )
+
+            if g_idx < len(groups) - 1:
+                boundary_lines_list.append(taxa_offset)
+
+        total_taxa = taxa_offset
         all_taxa = [f"taxon_{i + 1:03d}" for i in range(total_taxa)]
-        taxon_membership = [[] for _ in range(total_taxa)]
+        taxon_membership: list[list[int]] = [[] for _ in range(total_taxa)]
+        community_indices: list = [None] * n_communities
 
-        core_idx = list(range(n_core))
-        for t in core_idx:
+        for t in range(n_core):
             taxon_membership[t] = list(range(n_communities))
 
-        community_indices = []
-        for c in range(n_communities):
-            unique_idx = list(range(unique_starts[c], unique_starts[c] + unique_per[c]))
-            community_indices.append(np.array(core_idx + unique_idx))
-            for t in unique_idx:
-                if c not in taxon_membership[t]:
+        for g_idx, g in enumerate(groups):
+            gc_idx = group_core_idx_map[g_idx]
+            for t in gc_idx:
+                taxon_membership[t] = list(g)
+            for c in g:
+                u_idx = community_unique_idx_map[c]
+                community_indices[c] = np.array(list(range(n_core)) + gc_idx + u_idx)
+                for t in u_idx:
                     taxon_membership[t].append(c)
 
-        boundary_lines = unique_starts
+        boundary_lines = sorted(set(boundary_lines_list))
+
+    # --- core signature matrix ---
+    use_signatures = core_signature_strength != 1.0 and n_core > 0
+    if use_signatures:
+        sig = np.ones((n_communities, n_core))
+        for c, chunk in enumerate(np.array_split(range(n_core), n_communities)):
+            sig[c, chunk] = core_signature_strength
 
     # --- generate mean proportions per community ---
     community_means = np.zeros((n_communities, total_taxa))
     for c in range(n_communities):
         idx = community_indices[c]
-        community_means[c, idx] = rng.dirichlet(np.full(len(idx), alpha))
+        if use_signatures:
+            core_pos = idx[:n_core]
+            other_pos = idx[n_core:]
+            w = core_weight if core_weight is not None else n_core / len(idx)
+            community_means[c, core_pos] = rng.dirichlet(sig[c]) * w
+            if len(other_pos) > 0:
+                community_means[c, other_pos] = rng.dirichlet(np.full(len(other_pos), alpha)) * (1 - w)
+        else:
+            community_means[c, idx] = rng.dirichlet(np.full(len(idx), alpha))
 
     all_proportions = []
     all_counts = []
@@ -189,9 +310,14 @@ def make_communities(
             "core_overlap": core_overlap,
             "overlap_mode": overlap_mode,
             "n_core": n_core,
+            "groups": groups,
+            "group_core_overlap": group_core_overlap,
+            "n_group_core": n_group_core_list,
             "overlap_counts": overlap_counts,
             "boundary_lines": boundary_lines,
             "alpha": alpha,
+            "core_signature_strength": core_signature_strength,
+            "core_weight": core_weight,
             "n_samples": samples_per,
             "library_size": library_size,
             "shuffle_taxa": shuffle_taxa,

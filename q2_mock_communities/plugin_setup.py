@@ -37,7 +37,11 @@ plugin.methods.register_function(
         'overlap': Float % Range(0, 1, inclusive_end=True),
         'core_overlap': Float % Range(0, None),
         'overlap_mode': Str % Choices('chain', 'core', 'both'),
+        'groups': List[Str],
+        'group_core_overlap': Float % Range(0, None),
         'alpha': Float % Range(0, None),
+        'core_signature_strength': Float % Range(1, None),
+        'core_weight': Float % Range(0, 1, inclusive_end=True),
         'n_samples': List[Int % Range(1, None)],
         'library_size': Int % Range(1, None),
         'shuffle_taxa': Bool,
@@ -70,9 +74,33 @@ plugin.methods.register_function(
             'core = all communities share a common block; '
             'both = core shared by all plus chain overlap among unique portions.'
         ),
+        'groups': (
+            'Optional community grouping. Each value is a comma-separated list '
+            'of community indices that share a group-level core taxa block. '
+            'Together the groups must partition all community indices exactly once. '
+            'Example: --p-groups "0,1" "2,3" creates two groups sharing independent '
+            'core taxa. Omit entirely for no grouping.'
+        ),
+        'group_core_overlap': (
+            'Taxa shared within each non-singleton group. Same semantics as '
+            'core_overlap but applied per group. Values in (0,1) are a fraction '
+            'of the smallest community in the group; whole numbers >= 1 are exact counts.'
+        ),
         'alpha': (
             'Dirichlet concentration parameter controlling within-community '
             'evenness. <1 → sparse/uneven, =1 → uniform, >1 → even.'
+        ),
+        'core_signature_strength': (
+            'Controls how distinctly each community dominates a bloc of core taxa. '
+            '1.0 (default) = no signature (uniform). Higher values give each community '
+            'an elevated Dirichlet concentration on roughly 1/n_communities of the core '
+            'taxa. E.g. strength=10 with 9 core taxa and 3 communities: community 0 '
+            'emphasises taxa 0-2, community 1 emphasises 3-5, community 2 emphasises 6-8.'
+        ),
+        'core_weight': (
+            'Fraction of total abundance allocated to global core taxa when '
+            'core_signature_strength > 1. Default allocates proportionally '
+            '(n_core / taxa_per_community).'
         ),
         'n_samples': (
             'Samples per community. A single value applies uniformly; '
